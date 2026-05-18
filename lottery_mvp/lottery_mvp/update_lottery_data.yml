@@ -1,0 +1,127 @@
+name: Update Lottery Data
+
+on:
+  schedule:
+    - cron: "45 13 * * 1-4,6-7"
+    - cron: "15 14 * * 1-4,6-7"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: lottery-data-update
+  cancel-in-progress: false
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TZ: Asia/Shanghai
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Update draw data
+        id: update_draws
+        run: |
+          mkdir -p output
+          set +e
+          python scripts/update_draws.py --summary-file output/update_results.json --fail-on-error
+          exit_code=$?
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Build update summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          summary_path = Path("output/update_results.json")
+          if not summary_path.exists():
+              with open(Path.cwd() / "output" / "update_results.json", "w", encoding="utf-8") as fallback:
+                  fallback.write("[]\n")
+              results = []
+          else:
+              results = json.loads(summary_path.read_text(encoding="utf-8"))
+
+          status_map = {
+              "updated": "已更新",
+              "skipped": "已存在，已跳过",
+              "error": "更新失败",
+          }
+          lottery_map = {
+              "ssq": "双色球",
+              "dlt": "大乐透",
+          }
+
+          updated_count = sum(1 for item in results if item.get("status") == "updated")
+          skipped_count = sum(1 for item in results if item.get("status") == "skipped")
+          error_count = sum(1 for item in results if item.get("status") == "error")
+
+          lines = [
+              "## 最新开奖自动更新结果",
+              "",
+              f"- 新增写入：{updated_count}",
+              f"- 已存在跳过：{skipped_count}",
+              f"- 更新失败：{error_count}",
+              "",
+              "| 彩种 | 期号 | 状态 | 说明 |",
+              "| --- | --- | --- | --- |",
+          ]
+
+          for item in results:
+              lines.append(
+                  "| {lottery} | {issue} | {status} | {message} |".format(
+                      lottery=lottery_map.get(item.get("lottery_type"), item.get("lottery_type", "-")),
+                      issue=item.get("issue", "-"),
+                      status=status_map.get(item.get("status"), item.get("status", "-")),
+                      message=str(item.get("message", "")).replace("\n", " ").replace("|", "/"),
+                  )
+              )
+
+          with open(Path.cwd() / "output" / "update_summary.md", "w", encoding="utf-8") as handle:
+              handle.write("\n".join(lines) + "\n")
+
+          print("\n".join(lines))
+          PY
+          cat output/update_summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Diagnose sources when update has errors
+        if: always() && steps.update_draws.outputs.exit_code != '0'
+        run: |
+          python scripts/diagnose_sources.py --output-dir output
+          cat output/source_diagnostics.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit updated database
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add db/lottery.db
+          if git diff --cached --quiet; then
+            echo "No database changes to commit."
+            exit 0
+          fi
+          git commit -m "chore: update lottery data"
+          git push
+
+      - name: Fail workflow when update has errors
+        if: always() && steps.update_draws.outputs.exit_code != '0'
+        run: |
+          echo "Lottery update completed with at least one error."
+          exit 1
