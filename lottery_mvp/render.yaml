@@ -1,0 +1,31 @@
+services:
+  - type: pserv
+    name: lottery-mvp-db
+    plan: free
+    databaseName: lottery_mvp
+    databaseUser: lottery_mvp
+
+  - type: web
+    name: lottery-mvp-web
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: ADMIN_PASSWORD
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: lottery-mvp-db
+          property: connectionString
+
+  - type: cron
+    name: lottery-mvp-updater
+    runtime: docker
+    schedule: "30 14 * * *"
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: lottery-mvp-db
+          property: connectionString
+    dockerCommand: python updater.py --run-once
