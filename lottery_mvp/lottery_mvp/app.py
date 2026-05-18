@@ -33,6 +33,7 @@ with hero_right:
         - 访问权限：{status}
         - 页面结构：独立首页 / 彩种页 / 会员页 / 后台
         - 数据层：支持 SQLite，后续可切 PostgreSQL
+        - 套餐规则：免费 AI 3 次/天，9.9 元月卡 AI 10 次/天
         """.format(status="会员已登录" if is_member() else "未登录")
     )
 
